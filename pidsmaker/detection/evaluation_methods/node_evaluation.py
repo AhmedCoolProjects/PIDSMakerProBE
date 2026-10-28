@@ -26,6 +26,7 @@ from pidsmaker.detection.evaluation_methods.evaluation_utils import (
     get_ground_truth_nids,
     get_metrics_if_all_attacks_detected,
     get_threshold,
+    parse_fp_budgets,
     plot_detected_attacks_vs_precision,
     plot_discrimination_metric,
     plot_score_seen,
@@ -365,7 +366,8 @@ def main(
     )
     plot_scores_neat(pred_scores, y_truth, nodes, node2attacks, neat_scores_img_file, thr)
     # plot_score_seen(pred_scores, is_seen, seen_score_img_file)
-    stats = classifier_evaluation(y_truth, y_preds, pred_scores)
+    fp_budgets = parse_fp_budgets(getattr(cfg.evaluation, "precision_at_fixed_fp_budgets", None))
+    stats = classifier_evaluation(y_truth, y_preds, pred_scores, fp_budgets=fp_budgets)
 
     fp_in_malicious_tw_ratio = analyze_false_positives(
         y_truth,

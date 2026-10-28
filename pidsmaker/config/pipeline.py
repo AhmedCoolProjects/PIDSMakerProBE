@@ -168,6 +168,41 @@ def get_runtime_required_args(return_unknown_args=False, args=None):
         action="store_true",
         help="Whether to run the framework as in functional tests.",
     )
+    parser.add_argument(
+        "--eng-edge-feats",
+        dest="eng_edge_feats",
+        action="store_true",
+        help="Enable feature-engineered edge features. Flips both "
+        "the producer (construction.compute_eng_edge_feats) and the consumer "
+        "(appends eng_edge_feats to batching.edge_features) so it can't be half-enabled.",
+    )
+    parser.add_argument(
+        "--eng-edge-feats-categories",
+        dest="eng_edge_feats_categories",
+        type=str,
+        default=None,
+        help="Comma-separated engineered edge-feature categories to CONSUME in the model.",
+    )
+    parser.add_argument(
+        "--eng-edge-feats-producer-categories",
+        dest="eng_edge_feats_producer_categories",
+        type=str,
+        default=None,
+        help="Comma-separated engineered edge-feature categories to STORE during construction.",
+    )
+    parser.add_argument(
+        "--best-ap",
+        dest="best_ap",
+        action="store_true",
+        help="Select the returned model by AP (average precision) instead of the default ADP.",
+    )
+    parser.add_argument(
+        "--precision-at-fp",
+        dest="precision_at_fp",
+        type=str,
+        default=None,
+        help="Comma-separated false-positive budgets (e.g. '50,100,500,1000').",
+    )
 
     # Script-specific args
     parser.add_argument("--show_attack", type=int, help="Number of attack for plotting", default=0)
@@ -373,6 +408,11 @@ def validate_yml_file(yml_file: str, dictionary: dict):
                         user_literal_str = list(map(lambda x: x.strip(), sub_config.split(",")))
                         for e in user_literal_str:
                             if e not in expected_vals:
+                                try:
+                                    float(e)
+                                    continue
+                                except ValueError:
+                                    pass
                                 raise ValueError(
                                     f"Invalid argument {key} with value {e}. Expected values: {expected_vals}"
                                 )
@@ -452,6 +492,34 @@ def get_yml_cfg(args):
 
     # Overwrites args to the cfg
     overwrite_cfg_with_args(cfg, args)
+
+    if getattr(args, "eng_edge_feats", False):
+        cfg.construction.compute_eng_edge_feats = True
+        cfg.construction.eng_edge_feats_producer_categories = (
+            getattr(args, "eng_edge_feats_producer_categories", None)
+            or getattr(cfg.construction, "eng_edge_feats_producer_categories", None)
+            or "all"
+        )
+        cfg.batching.eng_edge_feats_consumer_categories = (
+            getattr(args, "eng_edge_feats_categories", None)
+            or getattr(cfg.batching, "eng_edge_feats_consumer_categories", None)
+            or getattr(cfg.construction, "eng_edge_feats_categories", None)
+            or "all"
+        )
+        cfg.construction.eng_edge_feats_categories = (
+            cfg.construction.eng_edge_feats_producer_categories
+        )
+        edge_feats = [t.strip() for t in str(cfg.batching.edge_features).split(",") if t.strip()]
+        edge_feats = [t for t in edge_feats if t != "none"]
+        if "eng_edge_feats" not in edge_feats:
+            edge_feats.append("eng_edge_feats")
+        cfg.batching.edge_features = ",".join(edge_feats)
+
+    if getattr(args, "best_ap", False):
+        cfg.evaluation.best_model_selection = "best_ap"
+
+    if getattr(args, "precision_at_fp", None):
+        cfg.evaluation.precision_at_fixed_fp_budgets = args.precision_at_fp
 
     # Here we create some variables based on parameters for easier usage
     set_shortcut_variables(cfg)

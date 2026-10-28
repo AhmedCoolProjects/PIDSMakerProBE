@@ -27,13 +27,18 @@ from pidsmaker.config import update_cfg_for_multi_dataset
 from pidsmaker.debug_tests import debug_test_batching
 from pidsmaker.encoders import TGNEncoder
 from pidsmaker.tgn import LastNeighborLoader
+from pidsmaker.preprocessing.build_graph_methods.edge_feat_engineering import (
+    get_active_dim,
+    get_consumer_indices_from_producer,
+    get_producer_dim,
+)
 from pidsmaker.utils.dataset_utils import (
     get_node_map,
     get_num_edge_type,
     get_rel2id,
     get_possible_events,
 )
-from pidsmaker.utils.utils import get_multi_datasets, log_dataset_stats, log_tqdm
+from pidsmaker.utils.utils import get_multi_datasets, log, log_dataset_stats, log_tqdm
 
 
 class CollatableTemporalData(TemporalData):
@@ -191,11 +196,22 @@ def extract_msg_from_data(
     edge_type_dim = cfg.dataset.num_edge_types
     selected_node_feats = cfg.batching.node_features
 
+    eng_stored_dim = get_producer_dim(cfg)
+    eng_dim = get_active_dim(cfg)
+    eng_consumer_idx = get_consumer_indices_from_producer(cfg) if eng_stored_dim > 0 else []
+
     msg_len = data_set[0].msg.shape[1]
-    expected_msg_len = (emb_dim * 2) + (node_type_dim * 2) + edge_type_dim
+    expected_msg_len = (emb_dim * 2) + (node_type_dim * 2) + edge_type_dim + eng_stored_dim
     if msg_len != expected_msg_len:
         raise ValueError(
             f"The msg has an invalid shape, found {msg_len} instead of {expected_msg_len} (Is your num_edge_types correct?)"
+        )
+    if eng_dim > 0:
+        log(
+            f"[eng] msg layout OK: width {msg_len} = "
+            f"src_emb({emb_dim}) + dst_emb({emb_dim}) + src_type({node_type_dim}) "
+            f"+ dst_type({node_type_dim}) + edge_type({edge_type_dim}) + eng_stored({eng_stored_dim}). "
+            f"consumer eng dim={eng_dim}."
         )
 
     field_to_size = {
@@ -204,6 +220,7 @@ def extract_msg_from_data(
         "edge_type": edge_type_dim,
         "dst_type": node_type_dim,
         "dst_emb": emb_dim,
+        "eng_feats": eng_stored_dim,
     }
 
     if "edges_distribution" in selected_node_feats:
@@ -228,6 +245,8 @@ def extract_msg_from_data(
         for field, size in field_to_size.items():
             fields[field] = g.msg[:, idx : idx + size]
             idx += size
+        if eng_stored_dim > 0:
+            fields["eng_feats"] = fields["eng_feats"][:, eng_consumer_idx]
 
         # Selects only the node features we want
         x_src, x_dst = [], []
@@ -339,6 +358,8 @@ def build_edge_feats(fields, msg, edge_features, possible_triplets, num_edge_typ
         edge_feats.append(triplets)
     if "msg" in edge_features:
         edge_feats.append(msg)
+    if "eng_edge_feats" in edge_features and "eng_feats" in fields:
+        edge_feats.append(fields["eng_feats"])
     edge_feats = torch.cat(edge_feats, dim=-1) if len(edge_feats) > 0 else None
     return edge_feats
 

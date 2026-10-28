@@ -1,0 +1,54 @@
+# probe_ml — classic ML anomaly detection on the 61-d engineered edge features.
+#
+# Fits a classic unsupervised AD model (IsolationForest by default) on BENIGN
+# training edges' engineered features (g.edge_feats) and writes per-edge anomaly
+# scores as the usual loss CSVs, so node_evaluation (max edge-score -> node,
+# robust thresholds, best-AUC/ADP snapshots) runs as-is.
+# No embeddings are learned (only_type); the model consumes g.edge_feats directly.
+
+_include_yml: velox
+
+construction:
+  # all 14 categories -> 61-d eng block by default; restrict via --eng-edge-feats-categories=...
+  compute_eng_edge_feats: true
+
+featurization:
+  used_method: only_type # no word2vec; skips embedding train + node-embed
+
+batching:
+  edge_features: eng_edge_feats # route the eng block into g.edge_feats
+
+training:
+  used_method: ml
+  seed: 0
+  ml:
+    # Classic anomaly detectors; kernel methods use a bounded benign subsample.
+    # isolation_forest (default) | hbos | ecod | mahalanobis | gmm | elliptic |
+    # pca | ocsvm | sgd_ocsvm | svdd | hmm.
+    algorithm: isolation_forest
+    normalize: asinh_zscore # none|asinh|zscore|asinh_zscore
+    contamination: 0.0 # <=0 -> auto/default
+    n_estimators: 200 # isolation_forest
+    n_bins: 50 # hbos
+    n_components: 8 # gmm / pca / HMM hidden states
+    pca_variance: 0.0 # >0 selects PCA components by explained variance ratio
+    covariance_type: full # gmm: full|tied|diag|spherical
+    reg_covar: 0.000001 # gmm covariance regularization (<=0 -> default 1e-6)
+    n_init: 1 # gmm init restarts
+    max_iter: 100 # gmm EM iterations
+    tol: 0.001 # gmm EM tolerance (<=0 -> default 1e-3)
+    init_params: kmeans # gmm: kmeans|k-means++|random|random_from_data
+    nu: 0.05 # OCSVM / SGDOneClassSVM
+    kernel: rbf # OCSVM / SVDD
+    gamma: scale # OCSVM / SVDD: scale|auto|positive number
+    max_train_samples: 1000 # SVDD default; set 25000 explicitly for OCSVM
+    c_param: 0.9 # SVDD dual-weight upper bound
+    degree: 3 # polynomial OCSVM / SVDD
+
+evaluation:
+  used_method: node_evaluation
+  log_best_snapshots: True
+  node_evaluation:
+    threshold_method: percentile_999_val_loss
+    use_dst_node_loss: True
+    use_kmeans: False

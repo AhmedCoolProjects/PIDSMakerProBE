@@ -10,6 +10,7 @@ from pidsmaker.detection.evaluation_methods.evaluation_utils import (
     get_detected_tps,
     get_metrics_if_all_attacks_detected,
     get_threshold,
+    parse_fp_budgets,
     plot_detected_attacks_vs_precision,
     plot_discrimination_metric,
     plot_scores_neat,
@@ -92,7 +93,8 @@ def main(val_tw_path, test_tw_path, model_epoch_dir, cfg, tw_to_malicious_nodes,
         thr,
     )
     plot_scores_neat(scores, y_truth, src_dst_t_type, edge2attack, neat_scores_img_file, thr)
-    stats = classifier_evaluation(y_truth, y_preds, scores)
+    fp_budgets = parse_fp_budgets(getattr(cfg.evaluation, "precision_at_fixed_fp_budgets", None))
+    stats = classifier_evaluation(y_truth, y_preds, scores, fp_budgets=fp_budgets)
 
     fps, tps, precision, recall = get_metrics_if_all_attacks_detected(
         scores, src_dst_t_type, attack_to_mal_edges

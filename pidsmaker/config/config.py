@@ -771,7 +771,18 @@ SYNTHETIC_ATTACKS = {
     },
 }
 
-THRESHOLD_METHODS = ["max_val_loss", "mean_val_loss", "threatrace", "magic", "flash", "nodlink"]
+THRESHOLD_METHODS = [
+    "max_val_loss",
+    "mean_val_loss",
+    "threatrace",
+    "magic",
+    "flash",
+    "nodlink",
+    "percentile_99_val_loss",
+    "percentile_999_val_loss",
+    "mean_std_val_loss",
+    "0.5",
+]
 
 # --- Tasks, subtasks, and argument configurations ---
 TASK_ARGS = {
@@ -788,6 +799,68 @@ TASK_ARGS = {
         "use_hashed_label": Arg(bool, desc="Whether to hash the textual features."),
         "fuse_edge": Arg(
             bool, desc="Whether to fuse duplicate sequential edges into a single edge."
+        ),
+        "compute_edge_features": Arg(
+            bool,
+            desc="Legacy Scope-A/B edge feature flag (kept for construction hash compatibility).",
+        ),
+        "feature_K": Arg(
+            int,
+            desc="Legacy Scope-A/B sub-bins (kept for construction hash compatibility).",
+        ),
+        "compute_eng_edge_feats": Arg(
+            bool,
+            desc="If True, compute engineered edge features over all pre-fusion events in each window and attach a compact vector to each surviving edge. Enabled via the --eng-edge-feats CLI flag.",
+        ),
+        "eng_edge_feats_categories": Arg(
+            str,
+            vals=AND(
+                [
+                    "pair",
+                    "time",
+                    "structural",
+                    "freq",
+                    "sequence",
+                    "semantic",
+                    "entropy",
+                    "ema",
+                    "path",
+                    "netflow",
+                    "global_novelty",
+                    "lineage",
+                    "beaconing",
+                    "host_os_profile",
+                    "all",
+                ]
+            ),
+            desc="Deprecated alias for consumer categories. Prefer batching.eng_edge_feats_consumer_categories or --eng-edge-feats-categories.",
+        ),
+        "eng_edge_feats_producer_categories": Arg(
+            str,
+            vals=AND(
+                [
+                    "pair",
+                    "time",
+                    "structural",
+                    "freq",
+                    "sequence",
+                    "semantic",
+                    "entropy",
+                    "ema",
+                    "path",
+                    "netflow",
+                    "global_novelty",
+                    "lineage",
+                    "beaconing",
+                    "host_os_profile",
+                    "all",
+                ]
+            ),
+            desc="Comma-separated engineered edge-feature categories to STORE during construction/feat_inference. Defaults to all.",
+        ),
+        "eng_edge_feats_ema_tau_frac": Arg(
+            float,
+            desc="EMA decay horizon for the 'ema' category, as a fraction of the window span (tau = window_span * frac). Defaults to 0.25.",
         ),
         "node_label_features": {
             "subject": Arg(
@@ -868,10 +941,35 @@ TASK_ARGS = {
         ),
         "edge_features": Arg(
             str,
-            vals=AND(["edge_type", "edge_type_triplet", "msg", "time_encoding", "none"]),
+            vals=AND(
+                ["edge_type", "edge_type_triplet", "msg", "time_encoding", "eng_edge_feats", "none"]
+            ),
             desc="Edge features to used during GNN training. `edge_type` refers to the system call type, `edge_type_triplet` \
                                 considers a same edge type as a new type if source or destination node types are different, `msg` is the message vector \
                                 used in the TGN, `time_encoding` encodes temporal order of events with their timestamps in the TGN, `none` uses no features.",
+        ),
+        "eng_edge_feats_consumer_categories": Arg(
+            str,
+            vals=AND(
+                [
+                    "pair",
+                    "time",
+                    "structural",
+                    "freq",
+                    "sequence",
+                    "semantic",
+                    "entropy",
+                    "ema",
+                    "path",
+                    "netflow",
+                    "global_novelty",
+                    "lineage",
+                    "beaconing",
+                    "host_os_profile",
+                    "all",
+                ]
+            ),
+            desc="Comma-separated engineered edge-feature categories exposed to the model as g.edge_feats.",
         ),
         "multi_dataset_training": Arg(
             bool, desc="Whether the GNN should be trained on all datasets in `multi_dataset`."
@@ -969,7 +1067,76 @@ TASK_ARGS = {
         "node_out_dim": Arg(int, desc="Number of neurons in the last layer of the encoder."),
         "grad_accumulation": Arg(int, desc="Number of epochs to gather gradients before backprop."),
         "inference_device": Arg(str, vals=OR(["cpu", "cuda"]), desc="Device used during testing."),
-        "used_method": Arg(str, vals=OR(["default"]), desc="Which training pipeline use."),
+        "used_method": Arg(
+            str,
+            vals=OR(["default", "ml"]),
+            desc="Which training pipeline use. `default` = neural (encoder/decoder). `ml` = fit a "
+            "classic unsupervised anomaly-detection model (probe_ml) on the engineered edge "
+            "features and write per-edge scores for node_evaluation.",
+        ),
+        "ml": {
+            "algorithm": Arg(
+                str,
+                vals=OR(
+                    [
+                        "isolation_forest",
+                        "hbos",
+                        "ecod",
+                        "mahalanobis",
+                        "gmm",
+                        "elliptic",
+                        "pca",
+                        "ocsvm",
+                        "sgd_ocsvm",
+                        "svdd",
+                        "hmm",
+                    ]
+                ),
+                desc="Classic unsupervised anomaly detector fit on benign edge features.",
+            ),
+            "normalize": Arg(
+                str,
+                vals=OR(["none", "asinh", "zscore", "asinh_zscore"]),
+                desc="Feature normalization before fitting (scaler fit on benign train).",
+            ),
+            "contamination": Arg(
+                float,
+                desc="Expected anomaly fraction (iForest/OCSVM/elliptic). <=0 or unset -> default/auto.",
+            ),
+            "n_estimators": Arg(int, desc="Trees for isolation_forest (default 200)."),
+            "n_bins": Arg(int, desc="Histogram bins for hbos (default 50)."),
+            "n_neighbors": Arg(
+                int, desc="Deprecated (knn/lof removed). Kept for backward-compatible configs."
+            ),
+            "n_components": Arg(int, desc="Components for GMM/PCA or hidden states for HMM."),
+            "pca_variance": Arg(
+                float,
+                desc="PCA only: if >0, select #components by explained-variance ratio.",
+            ),
+            "covariance_type": Arg(
+                str,
+                vals=OR(["full", "tied", "diag", "spherical"]),
+                desc="GMM covariance type (default full).",
+            ),
+            "reg_covar": Arg(
+                float,
+                desc="GMM non-negative covariance regularization added to the diagonal (default 1e-6).",
+            ),
+            "n_init": Arg(int, desc="GMM number of EM initializations/restarts (default 1)."),
+            "max_iter": Arg(int, desc="GMM EM maximum iterations (default 100)."),
+            "tol": Arg(float, desc="GMM EM convergence tolerance (default 1e-3). <=0 -> default."),
+            "init_params": Arg(
+                str,
+                vals=OR(["kmeans", "k-means++", "random", "random_from_data"]),
+                desc="GMM initialization method for weights/means/precisions (default kmeans).",
+            ),
+            "nu": Arg(float, desc="OCSVM/SGDOneClassSVM: upper bound on fraction of training errors (default 0.05)."),
+            "kernel": Arg(str, desc="OCSVM kernel (default rbf)."),
+            "gamma": Arg(str, desc="OCSVM/SVDD kernel gamma: scale, auto, or a positive number."),
+            "max_train_samples": Arg(int, desc="Maximum benign train samples for quadratic/kernel/HMM models."),
+            "c_param": Arg(float, desc="SVDD upper bound on each sample's dual weight (default 0.9)."),
+            "degree": Arg(int, desc="Polynomial kernel degree for OCSVM/SVDD (default 3)."),
+        },
         "encoder": {
             "dropout": Arg(float),
             "used_methods": Arg(
@@ -1012,9 +1179,16 @@ TASK_ARGS = {
         "ground_truth_version": Arg(str, vals=OR(["orthrus", "reapr", "threatrace"])),
         "best_model_selection": Arg(
             str,
-            vals=OR(["best_adp", "best_discrimination"]),
-            desc="Strategy to select the best model across epochs. `best_adp` selects the best model based on the highest ADP score, `best_discrimination` \
-                                    selects the model that does the best separation between top-score TPs and top-score FPs.",
+            vals=OR(["best_adp", "best_discrimination", "best_auc", "best_ap"]),
+            desc="Strategy to select the best model across epochs.",
+        ),
+        "log_best_snapshots": Arg(
+            bool,
+            desc="If True (default), track best snapshots by ADP, AUC, and AP across epochs.",
+        ),
+        "precision_at_fixed_fp_budgets": Arg(
+            str,
+            desc="Comma-separated false-positive budgets B (e.g. '50,100,500,1000').",
         ),
         "used_method": Arg(str),
         "node_evaluation": {

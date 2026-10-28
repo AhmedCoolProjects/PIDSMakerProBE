@@ -145,6 +145,9 @@ training:
             src_dst_projection_coef: 1
 
 evaluation:
+  best_model_selection: best_adp
+  log_best_snapshots: True
+  precision_at_fixed_fp_budgets: "50,100,500,1000"
   node_evaluation:
     threshold_method: max_val_loss
     use_dst_node_loss: True

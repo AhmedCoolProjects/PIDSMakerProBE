@@ -15,6 +15,7 @@ from pidsmaker.experiments.uncertainty import add_dropout_to_model
 from pidsmaker.losses import *
 from pidsmaker.model import Model
 from pidsmaker.objectives import *
+from pidsmaker.preprocessing.build_graph_methods.edge_feat_engineering import get_active_dim
 from pidsmaker.tgn import IdentityMessage, LastAggregator, TGNMemory, TimeEncodingMemory
 from pidsmaker.utils.data_utils import GraphReindexer
 from pidsmaker.utils.dataset_utils import (
@@ -744,6 +745,8 @@ def get_edge_dim(cfg, msg_dim):
             if not use_tgn:
                 raise TypeError("Edge feature `time_encoding` is only available if TGN is used.")
             edge_dim += tgn_memory_dim
+        elif edge_feat == "eng_edge_feats":
+            edge_dim += get_active_dim(cfg)
         elif edge_feat == "none":
             pass
         else:

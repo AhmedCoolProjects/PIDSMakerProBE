@@ -49,7 +49,7 @@ attack_colors = {
     9: "#1d293d"
 }
 
-def classifier_evaluation(y_test, y_test_pred, scores):
+def classifier_evaluation(y_test, y_test_pred, scores, fp_budgets=None):
     labels_exist = sum(y_test) > 0
     if labels_exist:
         tn, fp, fn, tp = confusion_matrix(y_test, y_test_pred).ravel()
@@ -103,7 +103,102 @@ def classifier_evaluation(y_test, y_test_pred, scores):
         "tn": tn,
         "fn": fn,
     }
+    if fp_budgets:
+        stats.update(precision_at_fixed_fp(y_test, scores, fp_budgets))
+    stats.update(max_f1_sweep(y_test, scores))
     return stats
+
+
+def parse_fp_budgets(raw):
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        tokens = [str(t) for t in raw]
+    else:
+        tokens = str(raw).replace(",", " ").split()
+    budgets = []
+    for t in tokens:
+        t = t.strip()
+        if not t:
+            continue
+        try:
+            b = int(float(t))
+        except ValueError:
+            log(f"WARNING: ignoring invalid FP budget '{t}' in precision_at_fixed_fp_budgets")
+            continue
+        if b >= 0:
+            budgets.append(b)
+    return sorted(set(budgets))
+
+
+def precision_at_fixed_fp(y_true, scores, fp_budgets):
+    out = {}
+    y_true = np.asarray(y_true).astype(int)
+    scores = np.asarray(scores, dtype=float)
+    total_pos = int(y_true.sum())
+
+    order = np.argsort(-scores, kind="stable")
+    y_sorted = y_true[order]
+    cum_tp = np.cumsum(y_sorted == 1)
+    cum_fp = np.cumsum(y_sorted == 0)
+
+    for b in fp_budgets:
+        b = int(b)
+        eligible = np.where(cum_fp <= b)[0]
+        if total_pos == 0 or len(eligible) == 0:
+            out[f"precision_at_fp_{b}"] = 0.0
+            out[f"recall_at_fp_{b}"] = 0.0
+            out[f"tp_at_fp_{b}"] = 0
+            out[f"fp_at_fp_{b}"] = 0
+            continue
+        idx = eligible[-1]
+        tp_b = int(cum_tp[idx])
+        fp_b = int(cum_fp[idx])
+        precision_b = tp_b / (tp_b + fp_b) if (tp_b + fp_b) > 0 else 0.0
+        recall_b = tp_b / total_pos if total_pos > 0 else 0.0
+        out[f"precision_at_fp_{b}"] = round(precision_b, 5)
+        out[f"recall_at_fp_{b}"] = round(recall_b, 5)
+        out[f"tp_at_fp_{b}"] = tp_b
+        out[f"fp_at_fp_{b}"] = fp_b
+
+    return out
+
+
+def max_f1_sweep(y_true, scores):
+    y_true = np.asarray(y_true).astype(int)
+    scores = np.asarray(scores, dtype=float)
+    total_pos = int(y_true.sum())
+
+    empty = {
+        "max_f1": 0.0,
+        "max_f1_precision": 0.0,
+        "max_f1_recall": 0.0,
+        "max_f1_threshold": 0.0,
+    }
+    if total_pos == 0 or len(scores) == 0:
+        return empty
+
+    order = np.argsort(-scores, kind="stable")
+    y_sorted = y_true[order]
+    s_sorted = scores[order]
+    cum_tp = np.cumsum(y_sorted == 1)
+    cum_fp = np.cumsum(y_sorted == 0)
+
+    tp = cum_tp.astype(float)
+    fp = cum_fp.astype(float)
+    fn = total_pos - tp
+    eps = 1e-12
+    precision = tp / (tp + fp + eps)
+    recall = tp / (tp + fn + eps)
+    f1 = 2 * precision * recall / (precision + recall + eps)
+
+    best = int(np.argmax(f1))
+    return {
+        "max_f1": round(float(f1[best]), 5),
+        "max_f1_precision": round(float(precision[best]), 5),
+        "max_f1_recall": round(float(recall[best]), 5),
+        "max_f1_threshold": round(float(s_sorted[best]), 8),
+    }
 
 
 def compute_mcc(tp, fp, tn, fn):
@@ -118,7 +213,11 @@ def compute_mcc(tp, fp, tn, fn):
 
 
 def get_threshold(val_tw_path, threshold_method: str):
-    threshold_method = threshold_method.strip()
+    threshold_method = str(threshold_method).strip()
+    try:
+        return float(threshold_method)
+    except ValueError:
+        pass
     if threshold_method == "max_val_loss":
         return calculate_threshold(val_tw_path, threshold_method)["max"]
     elif threshold_method == "mean_val_loss":
@@ -131,18 +230,32 @@ def get_threshold(val_tw_path, threshold_method: str):
         return calculate_threshold(val_tw_path, threshold_method)["percentile_90"]
     elif threshold_method == "magic":
         return calculate_threshold(val_tw_path, threshold_method)["mean"]
+    elif threshold_method == "percentile_99_val_loss":
+        return calculate_threshold(val_tw_path, threshold_method)["percentile_99"]
+    elif threshold_method == "percentile_999_val_loss":
+        return calculate_threshold(val_tw_path, threshold_method)["percentile_999"]
+    elif threshold_method == "mean_std_val_loss":
+        return calculate_threshold(val_tw_path, threshold_method)["mean_3std"]
     raise ValueError(f"Invalid threshold method `{threshold_method}`")
 
 
 def reduce_losses_to_score(losses: list[float], threshold_method: str):
-    threshold_method = threshold_method.strip()
+    threshold_method = str(threshold_method).strip()
+    try:
+        float(threshold_method)
+        return np.max(losses)
+    except ValueError:
+        pass
     if threshold_method == "mean_val_loss":
         return np.mean(losses)
-    elif (
-        threshold_method == "max_val_loss"
-        or threshold_method == "threatrace"
-        or threshold_method == "flash"
-        or threshold_method == "nodlink"
+    elif threshold_method in (
+        "max_val_loss",
+        "threatrace",
+        "flash",
+        "nodlink",
+        "percentile_99_val_loss",
+        "percentile_999_val_loss",
+        "mean_std_val_loss",
     ):
         return np.max(losses)
     raise ValueError(f"Invalid threshold method {threshold_method}")
@@ -160,13 +273,19 @@ def calculate_threshold(val_tw_dir, threshold_method):
         else:
             loss_list.extend(df["loss"].values())
 
+    loss_arr = np.asarray(loss_list, dtype=float)
     thr = {
         "max": max(loss_list),
         "mean": mean(loss_list),
         "percentile_90": percentile_90(loss_list),
+        "percentile_99": float(np.percentile(loss_arr, 99)),
+        "percentile_999": float(np.percentile(loss_arr, 99.9)),
+        "mean_3std": float(loss_arr.mean() + 3.0 * loss_arr.std()),
     }
     log(
-        f"Thresholds: MEAN={thr['mean']:.3f}, STD={std(loss_list):.3f}, MAX={thr['max']:.3f}, 90 Percentile={thr['percentile_90']:.3f}"
+        f"Thresholds: MEAN={thr['mean']:.3f}, STD={std(loss_list):.3f}, MAX={thr['max']:.3f}, "
+        f"90pct={thr['percentile_90']:.3f}, 99pct={thr['percentile_99']:.3f}, "
+        f"99.9pct={thr['percentile_999']:.3f}, mean+3std={thr['mean_3std']:.3f}"
     )
 
     return thr
@@ -1061,6 +1180,22 @@ def compute_tw_labels(cfg):
     out_path = cfg.construction._tw_labels
     out_file = os.path.join(out_path, "tw_to_malicious_nodes.pkl")
     uuid_to_node_id = get_ground_truth_uuid_to_node_id(cfg)
+    if os.path.exists(out_file):
+        log(f"Loading cached time-window labels from {out_file}...")
+        tw_to_malicious_nodes = torch.load(out_file)
+        mapped_tw = {}
+        for tw, nodes in tw_to_malicious_nodes.items():
+            if isinstance(nodes, dict):
+                mapped_tw[tw] = nodes
+                continue
+            unique_nodes, counts = np.unique(nodes, return_counts=True)
+            node_to_count = {
+                uuid_to_node_id[node]: int(count)
+                for node, count in zip(unique_nodes, counts)
+                if node in uuid_to_node_id
+            }
+            mapped_tw[tw] = node_to_count
+        return mapped_tw
 
     log("Computing time-window labels...")
     os.makedirs(out_path, exist_ok=True)

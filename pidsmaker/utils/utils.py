@@ -165,6 +165,18 @@ def init_database_connection(cfg):
     return cur, connect
 
 
+def stream_query(connect, sql, itersize=10000, name="pidsmaker_stream"):
+    """Stream rows from Postgres using a server-side named cursor."""
+    server_cursor = connect.cursor(name=name)
+    server_cursor.itersize = itersize
+    try:
+        server_cursor.execute(sql)
+        for row in server_cursor:
+            yield row
+    finally:
+        server_cursor.close()
+
+
 def std(t):
     t = np.array(t)
     return np.std(t)
@@ -358,7 +370,12 @@ def get_all_filelist(filepath):
 
 def listdir_sorted(path: str):
     files = os.listdir(path)
-    files.sort(key=lambda f: int("".join(filter(str.isdigit, f))))  # sorted by ascending number
+    # ponytail: fallback to string comparison if entry contains no digits
+    files.sort(
+        key=lambda f: (0, int("".join(filter(str.isdigit, f))), f)
+        if any(c.isdigit() for c in f)
+        else (1, 0, f)
+    )
     return files
 
 
