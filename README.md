@@ -154,9 +154,9 @@ python pidsmaker/main.py probe_ml CADETS_E3 --cpu \
 
 ## Setup
 
-### ⬇️ Clone the repo
+### ⬇️ Anonymous Repository (Double-Blind Review)
 ```
-git clone https://github.com/AhmedCoolProjects/PIDSMakerProBE.git
+https://anonymous.4open.science/r/PIDSMakerProBE-2778/
 ```
 
 ### 💻 Installation with Docker
