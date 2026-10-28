@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+# Prioritise local repo modules over any site-packages editable install
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import pytest
 
 
